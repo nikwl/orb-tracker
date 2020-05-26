@@ -1,0 +1,308 @@
+import time
+import cv2
+import random
+from .vWriter import VideoWriterWrapper
+import numpy as np
+
+"""
+Implements an ORB-based object tracker as specified by the paper:
+   Object Tracking Based on ORB and Temporal-Spacial Constraint by Shuang Wu,
+   IEEE Student Member, Yawen Fan, Shibao Zheng, IEEE Member and Hua Yang, IEEE
+   Member
+
+Authors: Alberto Serrano, Stephen Kim
+"""
+
+# Define global variables
+M = (0,0)
+centers = []
+vidWriter = None
+
+def startVideoWriter():
+    global vidWriter
+    vidWriter = VideoWriterWrapper(frame_width, frame_height)
+
+def endVideoWriter():
+    global vidWriter
+    vidWriter.cleanup()
+
+"""
+given two frames, previous and current frame, determine the search frame.
+
+This function directly reflects formulas (9), (10), and (11) in the paper. What
+gets returned in a 4-tuple representing S_i+1 from the paper
+
+:param: prev (4-tuple) specifying a frame conforming to the following:
+   1. x coordinate of the center of the frame
+   2. y coordinate of the center of the frame
+   3. width of the frame
+   4. height of the frame
+:param: curr (4-tuple) specifying a frame conforming to the following:
+   1. x coordinate of the center of the frame
+   2. y coordinate of the center of the frame
+   3. width of the frame
+   4. height of the frame
+:param: ap (int) specifying an alpha constant; used to increase the search
+    frame's width and height
+:return: (4-tuple) specifying the new search frame
+"""
+def getSearchFrame(im_dims, prev, curr, ap = 5):
+
+    m_x = curr[0] - prev[0]
+    m_y = curr[1] - prev[1]
+    curr = (curr[0], curr[1], curr[2] + ap, curr[3] + ap)
+
+    return clipNextFrame(im_dims, (m_x, m_y), curr)
+
+"""
+given a frame, return a bounding box
+
+:param: frame (4-tuple) specifying a frame conforming to the following:
+   1. x coordinate of the center of the frame
+   2. y coordinate of the center of the frame
+   3. width of the frame
+   4. height of the frame
+
+:return: (4-tuple) specifying a bounding box conforming to the following:
+   1. x coordinate for top left of the bounding box
+   2. y coordinate for top left of the bounding box
+   3. width of the frame
+   4. height of the frame
+"""
+# [c_x, c_y, w, h] -> [x, y, w, h]
+def bboxFromFrame(frame):
+    x = frame[0]
+    y = frame[1]
+    w = frame[2]
+    h = frame[3]
+    return (int(x - (w/2)), int(y - (h/2)), w, h)
+
+"""
+Processes an image with two frames of the same object at different times to
+determine the most probable location of the next frame for the object. Function
+returns two 4-tuples describing the previous frame (which is just the current
+frame) and the next frame
+
+:param: cur (nd np.array, an image) image corresponding to cframe
+:param: nxt (nd np.array, an image) image corresponding to s_i, the search frame
+:param: pframe (4-tuple) specifying the current frame conforming to the
+following
+   1. x coordinate of the center of the frame
+   2. y coordinate of the center of the frame
+   3. width of the frame
+   4. height of the frame
+:param: cframe (4-tuple) specifying the current frame conforming to the
+following
+   1. x coordinate of the center of the frame
+   2. y coordinate of the center of the frame
+   3. width of the frame
+   4. height of the frame
+:return: two 4-tuples; specifying the next previous and current frames
+"""
+def processLiveFeed(cur, nxt, pframe, cframe):
+    global M
+    orb = cv2.ORB_create(1000, 1.2)
+    bf  = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    s_i = getSearchFrame(pframe, cframe)
+
+    framebbox = bboxFromFrame(cframe)
+    sbbox = bboxFromFrame(s_i)
+
+    # Compute features within region for current frame
+    x = framebbox[0]
+    y = framebbox[1]
+    w = framebbox[2]
+    h = framebbox[3]
+    kp1,  des1 = orb.detectAndCompute(
+        cur[y:y+h, x:x+w], None
+    )
+
+    # Compute features within region for next adjacent frame
+    s_x = sbbox[0]
+    s_y = sbbox[1]
+    s_w = sbbox[2]
+    s_h = sbbox[3]
+    kp2, des2 = orb.detectAndCompute(
+        nxt[s_y:s_y+s_h, s_x:s_x+s_w], None
+    )
+
+    a = (x,y)
+    b = (s_x, s_y)
+    frame_i = cur[y:y+h, x:x+w]
+    frame_ipp = nxt[s_y:s_y+s_h, s_x:s_x+s_w]
+
+    if not ((des1 is None) or (des2 is None)):
+        matches = bf.match(des1,des2)
+        matches = sorted(matches, key=lambda val: val.distance)
+
+        M = videoDrawMatches(frame_i, a, kp1, frame_ipp, b, kp2, matches, 0, framebbox, cur, s_i)
+
+    nframe = (cframe[0] + int(M[0]), cframe[1] + int(M[1]), cframe[2], cframe[3])
+    return cframe, nframe
+
+
+def clipNextFrame(imdims, delta, frame):
+    m_x, m_y = delta
+    cx, cy, w_, h_ = frame
+    im_h, im_w, _ = imdims
+
+    if cx + m_x - (w_/2) < 0:
+        ncx = (w_/2)
+    elif cx + m_x - (w_/2) > im_w:
+        ncx = im_w - (w_/2)
+    else:
+        ncx = cx + m_x
+    
+    if cy + m_y - (h_/2) < 0:
+        ncy = (h_/2)
+    elif cy + m_y - (h_/2) > im_h:
+        ncy = im_h - (h_/2)
+    else:
+        ncy = cy + m_y
+    
+    return (ncx, ncy, w_, h_)
+
+def processLiveFeedPerm(cur, nxt, pframe, cframe, kp1, des1):
+    global M
+    orb = cv2.ORB_create(1000, 1.2)
+    bf  = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    s_i = getSearchFrame(cur.shape, pframe, cframe)
+
+    framebbox = bboxFromFrame(cframe)
+    sbbox = bboxFromFrame(s_i)
+
+    # Compute features within region for current frame
+    x = framebbox[0]
+    y = framebbox[1]
+    w = framebbox[2]
+    h = framebbox[3]
+    #if kp1 is None and des1 is None:
+    kp1,  des1 = orb.detectAndCompute(
+        cur[y:y+h, x:x+w], None
+    )
+
+    # Compute features within region for next adjacent frame
+    s_x = sbbox[0]
+    s_y = sbbox[1]
+    s_w = sbbox[2]
+    s_h = sbbox[3]
+    kp2, des2 = orb.detectAndCompute(
+        nxt[s_y:s_y+s_h, s_x:s_x+s_w], None
+    )
+
+    a = (x,y)
+    b = (s_x, s_y)
+    frame_i = cur[y:y+h, x:x+w]
+    frame_ipp = nxt[s_y:s_y+s_h, s_x:s_x+s_w]
+
+    if not ((des1 is None) or (des2 is None)):
+        matches = bf.match(des1,des2)
+        matches = sorted(matches, key=lambda val: val.distance)
+
+        a, b, cur = videoDrawMatches(frame_i, a, kp1, frame_ipp, b, kp2, matches, 0, framebbox, cur, s_i)
+        M = [a,b]
+    else:
+        p1 = (int(s_i[0])+1, int(s_i[1])+1)
+        p2 = (int(s_i[0] + s_i[2]-1), int(s_i[1] + s_i[3])-1)
+        cv2.rectangle(cur, p1, p2, (0,0,255), 2, 1)
+        p1 = (int(framebbox[0])+1, int(framebbox[1])+1)
+        p2 = (int(framebbox[0] + framebbox[2]-1), int(framebbox[1] + framebbox[3])-1)
+        cv2.rectangle(cur, p1, p2, (255,0,0), 2, 1)
+
+    nframe = [cframe[0] + int(M[0]), cframe[1] + int(M[1]), cframe[2], cframe[3]]
+    nframe = clipNextFrame(cur.shape, M, cframe)
+
+    return cframe, nframe, kp1, des1, cur
+
+
+"""
+Probably gonna change in future commits but heres some documentation:
+
+img1 - cropped image of "cur"
+img1_coord - bounding box of "cur"
+kp1 - keypoints of img1
+img2 - cropped image of "nxt"
+img2_coord - bounding box of "nxt"
+kp2 - keypoints of img2
+matches - matches between img1 and img2
+"""
+def videoDrawMatches(img1, img1_coord, kp1, img2, img2_coord, kp2, matches, counter, bbox, out, s_i, n_key = 3):
+    global vidWriter
+    #out = img1
+
+    # For each pair of points we have between both images
+    # draw circles, then connect a line between them
+    x    = int(bbox[0])
+    y    = int(bbox[1])
+    C1_x = 0
+    C1_y = 0
+    C2_x = 0
+    C2_y = 0
+
+    for mat in matches[:n_key]:
+        # Get the matching keypoints for each of the images
+        img1_idx = mat.queryIdx
+        img2_idx = mat.trainIdx
+
+        (x1,y1)  = get_real_coordinate(kp1[img1_idx].pt, img1_coord)
+        (x2,y2)  = get_real_coordinate(kp2[img2_idx].pt, img2_coord)
+        C1_x    += x1
+        C1_y    += y1
+        C2_x    += x2
+        C2_y    += y2
+
+        # Draw circles around keypoints
+        cv2.circle(out, (int(x1),int(y1)), 4, (0, 0, 255), 1)
+
+    C1_x /= n_key
+    C1_y /= n_key
+    C2_x /= n_key
+    C2_y /= n_key
+
+    # For debugging
+    #print("Train: (" + str(C1_x) + ",", str(C1_y)+ ")")
+    #print("Query: (" + str(C2_x) + ",", str(C2_y)+ ")")
+    #print("Motion: (" + str(C2_x-C1_x) + ",", str(C2_y-C1_y)+ ")")
+    #print()
+    centers.append((s_i[0],s_i[1]))
+    for i in range(len(centers)):
+        cv2.circle(out, (int(round(centers[i][0])), int(round(centers[i][1]))),
+            1, (0, 255, 0), 4)
+
+    p1 = (int(bbox[0]), int(bbox[1]))
+    p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
+    cv2.rectangle(out, p1, p2, (255,0,0), 2, 1)
+
+    # if you want to see ORB keypoints and matches at each iteration
+    #img3 = cv2.drawMatches(img1,kp1,img2,kp2,matches[:n_key],None,flags=2)
+    #cv2.imshow("Top " + str(n_key) + " ORB Keypoints and matched", img3)
+
+    # if you want to see the whole scene and watch the bounding box move
+    #cv2.imshow("Object tracking", out)
+    #if vidWriter is not None:
+    #    vidWriter.write(out)
+
+    return C2_x - C1_x, C2_y - C1_y, out
+
+"""
+Takes a coordinate from within a cropped image (e.g. a keypoint coordinate), a
+frame specifying where the cropped image exists in relation to the scene, and
+returns the "true" coordinate as it would exist in the scene.
+
+:param: coord (2-tuple) - specifies (x,y) coordinate from within a cropped image
+:param: frame (4-tuple) - specifies (x,y,w,h) bounding box that represents the
+    cropped image in a scene
+:return: (2-tuple) the x,y coordinate in terms of the scene
+
+This function proves useful in calculating the motion vector. Since ORB
+keypoints and descriptors are determined based on a cropped version of a larger
+scene (for performance reasons) when calculating the motion vector between two
+images, the keypoints need to be converted back to the real coordinates in the
+scene, otherwise the motion vectors are calculating relative distances which
+don't accurately reflect the change in centers
+"""
+def get_real_coordinate(coord,frame):
+    return frame[0]+coord[0], frame[1]+coord[1]
+
+def main():
+    liveFeedMatches()
