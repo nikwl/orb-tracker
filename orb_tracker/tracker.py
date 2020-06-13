@@ -1,7 +1,6 @@
 import time
 import cv2
 import random
-from .vWriter import VideoWriterWrapper
 import numpy as np
 
 """
@@ -16,15 +15,6 @@ Authors: Alberto Serrano, Stephen Kim
 # Define global variables
 M = (0,0)
 centers = []
-vidWriter = None
-
-def startVideoWriter():
-    global vidWriter
-    vidWriter = VideoWriterWrapper(frame_width, frame_height)
-
-def endVideoWriter():
-    global vidWriter
-    vidWriter.cleanup()
 
 """
 given two frames, previous and current frame, determine the search frame.
@@ -227,8 +217,6 @@ kp2 - keypoints of img2
 matches - matches between img1 and img2
 """
 def videoDrawMatches(img1, img1_coord, kp1, img2, img2_coord, kp2, matches, counter, bbox, out, s_i, n_key = 3):
-    global vidWriter
-    #out = img1
 
     # For each pair of points we have between both images
     # draw circles, then connect a line between them
@@ -276,11 +264,6 @@ def videoDrawMatches(img1, img1_coord, kp1, img2, img2_coord, kp2, matches, coun
     # if you want to see ORB keypoints and matches at each iteration
     #img3 = cv2.drawMatches(img1,kp1,img2,kp2,matches[:n_key],None,flags=2)
     #cv2.imshow("Top " + str(n_key) + " ORB Keypoints and matched", img3)
-
-    # if you want to see the whole scene and watch the bounding box move
-    #cv2.imshow("Object tracking", out)
-    #if vidWriter is not None:
-    #    vidWriter.write(out)
 
     return C2_x - C1_x, C2_y - C1_y, out
 

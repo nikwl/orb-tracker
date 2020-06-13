@@ -19,13 +19,13 @@ The front end is designed such that you can easily change the camera depending o
 ```python
 import cv2
 
-from orb_tracker.ORBTracker import ORBTracker
+from orb_tracker.orb_tracker import ORBTracker
 
 class CameraObject():
-    camera = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0)
 
     def get_frame(self):
-        _, frame = cap.read()
+        _, frame = self.cap.read()
         return frame
 
 if __name__ == "__main__":
