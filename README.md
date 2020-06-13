@@ -6,6 +6,7 @@ This is modified version of an existing implementation of an ORB object tracker 
 The front end is designed such that you can easily change the camera depending on your application. To do so simply create a class around the camera and implement a get_frame function. If you're interested in using the kinect camera with this tracker, check out my [kinect-toolbox](https://github.com/nikwl/kinect-toolbox). 
 
 ## Installation ##
+Tested with python2.7 and python3.6.
 1) Install required python packages:
      ```bash
      pip install -r requirements.txt
